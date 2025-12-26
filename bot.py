@@ -1,8 +1,6 @@
 import telebot
 import time
 import requests
-import os
-import shutil
 import threading
 from flask import Flask
 from telebot import types
@@ -14,7 +12,6 @@ ADMIN_PASSWORD = '1122'
 ADMIN_URL = 'https://t.me/ftcaiw24'
 GROUP_URL = 'https://t.me/ftc_sms_chat'
 CHANNEL_URL = 'https://t.me/ftc_sms'
-NUMBERS_DIR = 'numbers/'
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -22,7 +19,7 @@ bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Bot is Running!"
+    return "🔥 Firebase Bot is Running!"
 
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
@@ -30,7 +27,7 @@ def run_flask():
 threading.Thread(target=run_flask).start()
 
 # --- ২. ফায়ারবেজ হেল্পার ফাংশন ---
-def db_save(path, data):
+def db_put(path, data):
     requests.put(f"{FIREBASE_URL}/{path}.json", json=data)
 
 def db_get(path):
@@ -54,24 +51,25 @@ def main_menu():
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, "🔐 *Online OTP System Active* ✅\n\nনাম্বার নিতে নিচের বাটন চাপুন।", 
+    bot.send_message(message.chat.id, "🔐 *Online OTP System Active* ✅\n\nফায়ারবেজ ডাটাবেজ থেকে নাম্বার নিতে নিচের বাটন চাপুন।", 
                      parse_mode="Markdown", reply_markup=main_menu())
 
-# --- ৪. ইউজার সেকশন (সার্ভার ও নাম্বার) ---
+# --- ৪. ইউজার সেকশন (ফায়ারবেজ থেকে সার্ভার লোড) ---
 @bot.callback_query_handler(func=lambda call: call.data == "select_server")
 def select_server(call):
     markup = types.InlineKeyboardMarkup()
-    if not os.path.exists(NUMBERS_DIR): os.makedirs(NUMBERS_DIR)
     
-    files = [f.replace('.txt', '') for f in os.listdir(NUMBERS_DIR) if f.endswith('.txt')]
+    # ফায়ারবেজ থেকে সার্ভার লিস্ট আনা
+    servers_data = db_get("servers")
     
-    if not files:
+    if not servers_data:
         markup.add(types.InlineKeyboardButton("⬅️ Back to Home", callback_data="back_home"))
-        bot.edit_message_text("❌ কোনো সার্ভার বা নাম্বার লোড করা নেই!", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("❌ ডাটাবেজে কোনো সার্ভার নেই!", call.message.chat.id, call.message.message_id, reply_markup=markup)
         return
 
-    for s in files:
-        markup.add(types.InlineKeyboardButton(f"🔹 {s.upper()}", callback_data=f"srv_{s}"))
+    # সার্ভারগুলোর বাটন তৈরি
+    for srv_name in servers_data.keys():
+        markup.add(types.InlineKeyboardButton(f"🔹 {srv_name.upper()}", callback_data=f"srv_{srv_name}"))
     
     markup.add(types.InlineKeyboardButton("⬅️ Back to Home", callback_data="back_home"))
     bot.edit_message_text("একটি সার্ভার সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -81,23 +79,24 @@ def handle_number(call):
     server = call.data.split("_")[1]
     user_id = str(call.from_user.id)
     
-    file_path = os.path.join(NUMBERS_DIR, f"{server}.txt")
-    if not os.path.exists(file_path):
-        bot.answer_callback_query(call.id, "ফাইলটি পাওয়া যায়নি!", show_alert=True)
+    # ফায়ারবেজ থেকে ঐ সার্ভারের নাম্বার লিস্ট আনা
+    numbers = db_get(f"servers/{server}")
+    
+    if not numbers or not isinstance(numbers, list):
+        bot.answer_callback_query(call.id, "এই সার্ভারে কোনো নাম্বার নেই!", show_alert=True)
         return
 
-    with open(file_path, 'r') as f:
-        numbers = [line.strip() for line in f.readlines() if line.strip()]
-
+    # ইউজারের প্রগ্রেস চেক
     progress = db_get(f"user_progress/{user_id}")
     index = (progress['index'] + 1) if (progress and progress.get('server') == server) else 0
 
     if index < len(numbers):
         phone = numbers[index]
-        db_save(f"user_progress/{user_id}", {"index": index, "server": server})
+        # ইউজারের প্রগ্রেস আপডেট
+        db_put(f"user_progress/{user_id}", {"index": index, "server": server})
         
         markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(types.InlineKeyboardButton("🔄 Get Next", callback_data=f"srv_{server}"),
+        markup.add(types.InlineKeyboardButton("🔄 Next Number", callback_data=f"srv_{server}"),
                    types.InlineKeyboardButton("📩 Get SMS", callback_data=f"check_{phone}"))
         markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="select_server"))
         
@@ -112,7 +111,7 @@ def check_sms(call):
     now = int(time.time())
     data = db_get(f"sms_logs/{phone}")
     
-    if data and abs(now - data['timestamp']) <= 60:
+    if data and abs(now - data['timestamp']) <= 300: # ৫ মিনিট পর্যন্ত ভ্যালিড
         bot.send_message(call.message.chat.id, f"🔐 *OTP Received* ✅\n\n☎️ `{phone}`\n💬 `{data['message']}`", parse_mode="Markdown")
     else:
         markup = types.InlineKeyboardMarkup()
@@ -123,18 +122,18 @@ def check_sms(call):
 def back_home(call):
     bot.edit_message_text("🔐 *Online OTP System Active* ✅", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=main_menu())
 
-# --- ৫. কনসোল থেকে ডাটাবেজ আপডেট ---
+# --- ৫. কনসোল থেকে ডাটাবেজ আপডেট (ব্রাউজার স্ক্রিপ্ট) ---
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("DB_ADD:"))
 def remote_db_add(message):
     try:
         raw = message.text.replace("DB_ADD:", "").split("|")
         phone, msg = raw[0].strip(), raw[1].strip()
-        db_save(f"sms_logs/{phone}", {"message": msg, "timestamp": int(time.time())})
-        bot.reply_to(message, f"✅ DB Updated: {phone}")
+        db_put(f"sms_logs/{phone}", {"message": msg, "timestamp": int(time.time())})
+        bot.reply_to(message, f"✅ Firebase Updated: {phone}")
     except: pass
 
 # ==========================================
-#              ৬. এডমিন প্যানেল (New)
+#              ৬. এডমিন প্যানেল (Firebase)
 # ==========================================
 
 @bot.message_handler(commands=['admin'])
@@ -150,102 +149,81 @@ def verify_password(message):
 
 def show_admin_panel(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("➕ Add New Server / Numbers", callback_data="adm_add_srv"))
-    markup.add(types.InlineKeyboardButton("🧹 Clean Old OTPs (1 Hour)", callback_data="adm_clean_otp"))
+    markup.add(types.InlineKeyboardButton("➕ Add Numbers to Firebase", callback_data="adm_add_fb"))
+    markup.add(types.InlineKeyboardButton("🗑️ DELETE ALL OTPs (Reset)", callback_data="adm_del_all_otp"))
     markup.add(types.InlineKeyboardButton("🗑️ Delete Specific Server", callback_data="adm_del_srv"))
-    markup.add(types.InlineKeyboardButton("⚠️ Delete ALL Servers", callback_data="adm_del_all"))
     markup.add(types.InlineKeyboardButton("🚪 Logout", callback_data="back_home"))
-    bot.send_message(chat_id, "⚙️ *Admin Dashboard*\nঅপশন সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, "⚙️ *Firebase Admin Dashboard*\nঅপশন সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=markup)
 
-# --- Clean OTP Logic ---
-@bot.callback_query_handler(func=lambda call: call.data == "adm_clean_otp")
-def clean_old_otps(call):
-    bot.answer_callback_query(call.id, "Checking database...")
-    logs = db_get("sms_logs")
-    if not logs:
-        bot.send_message(call.message.chat.id, "❌ ডাটাবেজ খালি!")
-        return
+# --- 1. Delete ALL OTPs ---
+@bot.callback_query_handler(func=lambda call: call.data == "adm_del_all_otp")
+def confirm_del_otp(call):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⚠️ YES, DELETE ALL", callback_data="do_del_otp"))
+    markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="back_admin"))
+    bot.edit_message_text("⚠️ আপনি কি ডাটাবেজের **সব ওটিপি** ডিলিট করতে চান?", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-    count = 0
-    now = int(time.time())
-    for phone, data in logs.items():
-        # ১ ঘন্টা (৩৬০০ সেকেন্ড) এর পুরনো ডাটা ডিলিট
-        if now - data['timestamp'] > 3600:
-            db_delete(f"sms_logs/{phone}")
-            count += 1
-    
-    bot.send_message(call.message.chat.id, f"✅ ক্লিন সম্পন্ন!\n🗑️ মোট {count} টি পুরনো ওটিপি ডিলিট করা হয়েছে।")
+@bot.callback_query_handler(func=lambda call: call.data == "do_del_otp")
+def delete_all_otps(call):
+    db_delete("sms_logs") # পুরো sms_logs নোড ডিলিট করে দিবে
+    bot.answer_callback_query(call.id, "All OTPs Deleted!", show_alert=True)
+    bot.send_message(call.message.chat.id, "✅ ডাটাবেজের সব ওটিপি ক্লিয়ার করা হয়েছে।")
     show_admin_panel(call.message.chat.id)
 
-# --- Add Server Logic ---
-@bot.callback_query_handler(func=lambda call: call.data == "adm_add_srv")
-def adm_ask_name(call):
-    msg = bot.send_message(call.message.chat.id, "📝 সার্ভারের নাম লিখুন (উদা: facebook, whatsapp):")
-    bot.register_next_step_handler(msg, adm_get_name)
+# --- 2. Add Numbers to Firebase ---
+@bot.callback_query_handler(func=lambda call: call.data == "adm_add_fb")
+def adm_ask_srv(call):
+    msg = bot.send_message(call.message.chat.id, "📝 সার্ভারের নাম লিখুন (উদা: facebook):")
+    bot.register_next_step_handler(msg, adm_get_srv)
 
-def adm_get_name(message):
+def adm_get_srv(message):
     server_name = message.text.lower().strip()
-    msg = bot.send_message(message.chat.id, f"📦 *{server_name.upper()}* এর জন্য নাম্বার লিস্ট পেস্ট করুন:\n(প্রতি লাইনে একটি করে নাম্বার)", parse_mode="Markdown")
-    bot.register_next_step_handler(msg, lambda m: adm_save_numbers(m, server_name))
+    msg = bot.send_message(message.chat.id, f"📦 *{server_name.upper()}* এর জন্য নাম্বার লিস্ট পেস্ট করুন:\n(প্রতি লাইনে একটি নাম্বার)", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, lambda m: adm_push_numbers(m, server_name))
 
-def adm_save_numbers(message, server_name):
-    numbers = message.text.strip()
-    if not numbers:
+def adm_push_numbers(message, server_name):
+    raw_text = message.text.strip()
+    if not raw_text:
         bot.send_message(message.chat.id, "❌ কোনো নাম্বার পাওয়া যায়নি।")
         return
 
-    if not os.path.exists(NUMBERS_DIR): os.makedirs(NUMBERS_DIR)
+    new_numbers = [n.strip() for n in raw_text.split('\n') if n.strip()]
     
-    # নতুন ফাইল তৈরি হবে অথবা আগের ফাইলে নাম্বার যোগ হবে (Append Mode)
-    file_path = os.path.join(NUMBERS_DIR, f"{server_name}.txt")
-    with open(file_path, 'a') as f:
-        f.write(numbers + "\n")
+    # আগের নাম্বারগুলো চেক করা (Append Logic)
+    current_numbers = db_get(f"servers/{server_name}")
+    if not current_numbers:
+        current_numbers = []
     
-    line_count = len(numbers.split('\n'))
-    bot.send_message(message.chat.id, f"✅ *{server_name.upper()}* সার্ভারে {line_count} টি নাম্বার সেভ হয়েছে!", parse_mode="Markdown")
+    # নতুন নাম্বার যোগ করা
+    final_list = current_numbers + new_numbers
+    
+    # ফায়ারবেজে সেভ করা
+    db_put(f"servers/{server_name}", final_list)
+    
+    bot.send_message(message.chat.id, f"✅ ফায়ারবেজে {len(new_numbers)} টি নাম্বার যোগ হয়েছে!\nসার্ভার: {server_name}")
     show_admin_panel(message.chat.id)
 
-# --- Delete Specific Server ---
+# --- 3. Delete Specific Server ---
 @bot.callback_query_handler(func=lambda call: call.data == "adm_del_srv")
-def adm_show_del_list(call):
+def adm_list_srv_del(call):
     markup = types.InlineKeyboardMarkup()
-    if not os.path.exists(NUMBERS_DIR): os.makedirs(NUMBERS_DIR)
-    files = [f.replace('.txt', '') for f in os.listdir(NUMBERS_DIR) if f.endswith('.txt')]
+    servers = db_get("servers")
     
-    if not files:
-        bot.answer_callback_query(call.id, "কোনো সার্ভার নেই!", show_alert=True)
+    if not servers:
+        bot.answer_callback_query(call.id, "ডাটাবেজে কোনো সার্ভার নেই!", show_alert=True)
         return
 
-    for s in files:
-        markup.add(types.InlineKeyboardButton(f"🗑️ Delete {s.upper()}", callback_data=f"del_confirm_{s}"))
+    for s in servers.keys():
+        markup.add(types.InlineKeyboardButton(f"🗑️ Delete {s.upper()}", callback_data=f"del_fb_{s}"))
     markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_admin"))
-    bot.edit_message_text("কোন সার্ভারটি ডিলিট করতে চান?", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.edit_message_text("কোন সার্ভারটি ফায়ারবেজ থেকে মুছতে চান?", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("del_confirm_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del_fb_"))
 def adm_del_process(call):
     server = call.data.split("_")[2]
-    try:
-        os.remove(os.path.join(NUMBERS_DIR, f"{server}.txt"))
-        bot.answer_callback_query(call.id, "Deleted!", show_alert=True)
-        bot.send_message(call.message.chat.id, f"✅ {server} সার্ভারটি ডিলিট করা হয়েছে।")
-    except:
-        bot.send_message(call.message.chat.id, "❌ ডিলিট করতে সমস্যা হয়েছে।")
-    show_admin_panel(call.message.chat.id)
-
-# --- Delete ALL Servers ---
-@bot.callback_query_handler(func=lambda call: call.data == "adm_del_all")
-def adm_del_all_confirm(call):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("⚠️ YES, DELETE ALL", callback_data="adm_nuke_yes"))
-    markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="back_admin"))
-    bot.edit_message_text("⚠️ আপনি কি নিশ্চিত সব সার্ভার ও নাম্বার ডিলিট করতে চান?", call.message.chat.id, call.message.message_id, reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_nuke_yes")
-def adm_nuke(call):
-    if os.path.exists(NUMBERS_DIR):
-        shutil.rmtree(NUMBERS_DIR) # পুরো ফোল্ডার ডিলিট
-        os.makedirs(NUMBERS_DIR)   # আবার খালি ফোল্ডার তৈরি
-    bot.send_message(call.message.chat.id, "💥 সব সার্ভার ও নাম্বার ডিলিট করা হয়েছে!")
+    db_delete(f"servers/{server}")
+    bot.answer_callback_query(call.id, "Deleted!", show_alert=True)
+    bot.send_message(call.message.chat.id, f"✅ {server} সার্ভারটি ফায়ারবেজ থেকে মুছে ফেলা হয়েছে।")
     show_admin_panel(call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_admin")
@@ -254,6 +232,5 @@ def back_admin(call):
     show_admin_panel(call.message.chat.id)
 
 if __name__ == "__main__":
-    if not os.path.exists(NUMBERS_DIR): os.makedirs(NUMBERS_DIR)
-    print("🤖 Bot is Running with Advanced Admin Panel...")
+    print("🤖 Firebase Bot is Running...")
     bot.polling(none_stop=True)
